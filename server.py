@@ -244,7 +244,7 @@ TOOL_CONVERT = Tool(
             },
             "jsx_code": {
                 "type": "string",
-                "description": "JSX/React 源代码，或完整的 HTML 文档字符串（自动按内容类型处理，不支持相对 import）",
+                "description": "JSX/React 源代码或 HTML 文档字符串。仅用于文件尚未落盘的场景（如模型刚生成的代码）。文件已在磁盘上时必须用 file_path，禁止读取文件内容后通过此参数传入。",
             },
             "output_path": {
                 "type": "string",
