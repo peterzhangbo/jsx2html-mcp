@@ -104,7 +104,7 @@ def _invoke_convert(input_path: Path, output_path: Path, title: str, mode: str, 
 
 def _run_convert(jsx_code: str, title: str, mode: str, base_dir: Path | None) -> dict:
     stem = _slugify(title)
-    out_dir = _dist_dir(base_dir or Path("~/Desktop").expanduser())
+    out_dir = _dist_dir(base_dir or Path.cwd())
 
     with tempfile.TemporaryDirectory(prefix="jsx2html_") as tmpdir:
         stripped = jsx_code.lstrip()
@@ -166,7 +166,7 @@ TOOL_CONVERT = Tool(
             },
             "output_path": {
                 "type": "string",
-                "description": "输出基础目录（支持 ~）。工具在此目录下建 dist/ 子文件夹存放产物。默认：jsx_code 用 ~/Desktop，tar_gz_path 用 tar 文件所在目录",
+                "description": "输出基础目录（支持 ~）。工具在此目录下建 dist/ 子文件夹存放产物。默认：tar_gz_path 用 tar 文件所在目录，jsx_code 用当前工作目录",
             },
             "title": {
                 "type": "string",
