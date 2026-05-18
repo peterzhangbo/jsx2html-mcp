@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import zipfile
 from pathlib import Path
 
 from mcp.server import Server
@@ -102,6 +103,31 @@ def _invoke_convert(input_path: Path, output_path: Path, title: str, mode: str, 
     }
 
 
+def _run_convert_zip(zip_path: Path, title: str, mode: str, base_dir: Path | None) -> dict:
+    stem = zip_path.name.split(".")[0]
+    out_dir = _dist_dir(base_dir or zip_path.parent)
+
+    with tempfile.TemporaryDirectory(prefix="jsx2html_zip_") as tmpdir:
+        extract_dir = Path(tmpdir) / "src"
+        extract_dir.mkdir()
+
+        with zipfile.ZipFile(zip_path, "r") as zf:
+            zf.extractall(extract_dir)
+
+        children = list(extract_dir.iterdir())
+        if len(children) == 1 and children[0].is_dir():
+            extract_dir = children[0]
+
+        entry, is_batch = _find_entry(extract_dir)
+        out_path = out_dir if is_batch else out_dir / f"{stem}.html"
+        result = _invoke_convert(entry, out_path, title, mode, batch=is_batch)
+
+        if is_batch and result.get("zip"):
+            result["output_path"] = result["zip"]
+
+        return result
+
+
 def _run_convert_url(url: str, title: str, mode: str, base_dir: Path | None) -> dict:
     import urllib.parse
     parsed = urllib.parse.urlparse(url)
@@ -118,21 +144,33 @@ def _run_convert_url(url: str, title: str, mode: str, base_dir: Path | None) -> 
 
         download_path.write_bytes(data)
 
-        is_tar = (
+        is_zip = (
+            "zip" in content_type
+            or url_filename.endswith(".zip")
+            or zipfile.is_zipfile(download_path)
+        )
+        is_tar = not is_zip and (
             "tar" in content_type
             or url_filename.endswith((".tar.gz", ".tgz", ".tar"))
             or tarfile.is_tarfile(download_path)
         )
 
-        if is_tar:
-            return _run_convert_tar(download_path, title, mode, base_dir or Path.cwd())
+        base = base_dir or Path.cwd()
+        if is_zip:
+            return _run_convert_zip(download_path, title, mode, base)
+        elif is_tar:
+            return _run_convert_tar(download_path, title, mode, base)
         else:
             stem = Path(url_filename).stem or "index"
-            out_dir = _dist_dir(base_dir or Path.cwd())
+            out_dir = _dist_dir(base)
             return _invoke_convert(download_path, out_dir / f"{stem}.html", title, mode, batch=False)
 
 
 def _run_convert_file(file_path: Path, title: str, mode: str, base_dir: Path | None) -> dict:
+    if zipfile.is_zipfile(file_path):
+        return _run_convert_zip(file_path, title, mode, base_dir)
+    if tarfile.is_tarfile(file_path):
+        return _run_convert_tar(file_path, title, mode, base_dir)
     stem = file_path.stem
     out_dir = _dist_dir(base_dir or file_path.parent)
     return _invoke_convert(file_path, out_dir / f"{stem}.html", title, mode, batch=False)
@@ -194,7 +232,7 @@ TOOL_CONVERT = Tool(
         "properties": {
             "file_path": {
                 "type": "string",
-                "description": "单个 HTML 或 JSX 文件的本地路径（支持 ~）。输出到文件所在目录的 dist/ 下",
+                "description": "本地文件路径（支持 ~）：HTML/JSX 文件直接转换；.zip 或 .tar.gz 压缩包自动解压后走多文件流程。输出到文件所在目录的 dist/ 下",
             },
             "url": {
                 "type": "string",
