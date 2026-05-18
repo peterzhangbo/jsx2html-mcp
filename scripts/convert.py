@@ -12,6 +12,7 @@ Two modes:
   full  - missing non-React deps are fetched from unpkg at convert time and inlined
 """
 import argparse
+import base64
 import json
 import os
 import re
@@ -169,6 +170,41 @@ _CSS_IMPORT_RE = re.compile(
 )
 
 
+_FONT_URL_RE = re.compile(
+    r"""url\(\s*['"]?(https?://[^'")\s]+\.(?:woff2?|ttf|otf|eot)[^'")\s]*)['"]?\s*\)""",
+    re.IGNORECASE,
+)
+
+_FONT_MIME = {
+    "woff2": "font/woff2",
+    "woff": "font/woff",
+    "ttf": "font/ttf",
+    "otf": "font/otf",
+    "eot": "application/vnd.ms-fontobject",
+}
+
+
+def _inline_font_urls(css: str, mode: str, degraded_css: list) -> str:
+    """Replace external font file URLs with base64 data URIs (full mode only)."""
+    def replace(m):
+        url = m.group(1)
+        ext = url.split("?")[0].rsplit(".", 1)[-1].lower()
+        mime = _FONT_MIME.get(ext, "font/woff2")
+        if mode == "full":
+            try:
+                with urllib.request.urlopen(url, timeout=15) as resp:
+                    data = base64.b64encode(resp.read()).decode("ascii")
+                return f"url('data:{mime};base64,{data}')"
+            except Exception:
+                degraded_css.append(url)
+                return m.group(0)
+        else:
+            degraded_css.append(url)
+            return m.group(0)
+
+    return _FONT_URL_RE.sub(replace, css)
+
+
 def _inline_css_imports(css: str, mode: str, degraded_css: list) -> str:
     """Replace external @import rules with fetched CSS (full mode) or leave + record (fast mode)."""
     def replace(m):
@@ -179,8 +215,8 @@ def _inline_css_imports(css: str, mode: str, degraded_css: list) -> str:
             try:
                 with urllib.request.urlopen(url, timeout=15) as resp:
                     fetched = resp.read().decode("utf-8", errors="replace")
-                # Recursively inline any nested @imports in the fetched CSS
                 fetched = _inline_css_imports(fetched, mode, degraded_css)
+                fetched = _inline_font_urls(fetched, mode, degraded_css)
                 return f"/* inlined from {url} */\n{fetched}"
             except Exception:
                 degraded_css.append(url)
@@ -190,6 +226,13 @@ def _inline_css_imports(css: str, mode: str, degraded_css: list) -> str:
             return m.group(0)
 
     return _CSS_IMPORT_RE.sub(replace, css)
+
+
+def _process_css(css: str, mode: str, degraded_css: list) -> str:
+    """Inline all external @imports and font URLs in a CSS string."""
+    css = _inline_css_imports(css, mode, degraded_css)
+    css = _inline_font_urls(css, mode, degraded_css)
+    return css
 
 
 def transform_react_imports(jsx: str):
@@ -404,23 +447,32 @@ def _run(args):
     if input_path.suffix.lower() == '.html':
         html_content = input_path.read_text(encoding="utf-8")
 
-        # 1. Extract remote links (preconnect, fonts)
-        for m in re.finditer(r'<link\s+[^>]*rel=["\'](?:stylesheet|preconnect)["\'][^>]*>', html_content, re.IGNORECASE):
-            if re.search(r'href=["\'](http[^"\']+|//[^"\']+)["\']', m.group(0), re.IGNORECASE):
-                extra_css = m.group(0) + "\n" + extra_css
-
-        # 2. Extract local CSS files
+        # 2. Extract CSS files — local ones are inlined; remote ones are fetched in full mode
         for m in re.finditer(r'<link\s+[^>]*rel=["\']stylesheet["\'][^>]*href=["\']([^"\']+)["\'][^>]*>', html_content, re.IGNORECASE):
             href = m.group(1)
-            if not href.startswith(('http://', 'https://', '//')):
+            if href.startswith(('http://', 'https://', '//')):
+                url = href if not href.startswith('//') else 'https:' + href
+                if args.mode == 'full':
+                    try:
+                        with urllib.request.urlopen(url, timeout=15) as resp:
+                            css_content = resp.read().decode('utf-8', errors='replace')
+                        css_content = _process_css(css_content, args.mode, degraded_css)
+                        extra_css += f"\n<!-- Inlined from {url} -->\n<style>\n{css_content}\n</style>\n"
+                    except Exception:
+                        degraded_css.append(url)
+                        extra_css = m.group(0) + "\n" + extra_css
+                else:
+                    degraded_css.append(url)
+                    extra_css = m.group(0) + "\n" + extra_css
+            else:
                 css_file = input_path.parent / href
                 if css_file.exists():
-                    css_content = _inline_css_imports(css_file.read_text(encoding='utf-8'), args.mode, degraded_css)
+                    css_content = _process_css(css_file.read_text(encoding='utf-8'), args.mode, degraded_css)
                     extra_css += f"\n<!-- Inlined from {href} -->\n<style>\n{css_content}\n</style>\n"
 
         # 3. Extract embedded <style> blocks
         for m in re.finditer(r'<style[^>]*>(.*?)</style>', html_content, re.IGNORECASE | re.DOTALL):
-            css_content = _inline_css_imports(m.group(1), args.mode, degraded_css)
+            css_content = _process_css(m.group(1), args.mode, degraded_css)
             extra_css += f"\n<style>\n{css_content}\n</style>\n"
             
         # 4. Extract local jsx scripts
