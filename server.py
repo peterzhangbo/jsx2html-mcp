@@ -140,7 +140,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         else _default_output_path(title)
     )
 
-    loop = asyncio.get_event_loop()
+    loop = asyncio.get_running_loop()
     result = await loop.run_in_executor(
         None, _run_convert, jsx_code, output_path, title, mode
     )
