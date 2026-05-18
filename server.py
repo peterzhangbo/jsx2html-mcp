@@ -98,7 +98,9 @@ def _invoke_convert(input_path: Path, output_path: Path, title: str, mode: str, 
 
 def _run_convert(jsx_code: str, output_path: Path, title: str, mode: str) -> dict:
     with tempfile.TemporaryDirectory(prefix="jsx2html_") as tmpdir:
-        input_file = Path(tmpdir) / "input.jsx"
+        stripped = jsx_code.lstrip()
+        ext = ".html" if stripped.lower().startswith(("<!doctype", "<html")) else ".jsx"
+        input_file = Path(tmpdir) / f"input{ext}"
         input_file.write_text(jsx_code, encoding="utf-8")
         return _invoke_convert(input_file, output_path, title, mode, batch=False)
 
@@ -137,7 +139,7 @@ TOOL_CONVERT = Tool(
         "properties": {
             "jsx_code": {
                 "type": "string",
-                "description": "完整的单文件 JSX/React 源代码（不支持相对 import）",
+                "description": "JSX/React 源代码，或完整的 HTML 文档字符串（自动按内容类型处理，不支持相对 import）",
             },
             "tar_gz_path": {
                 "type": "string",
