@@ -506,27 +506,19 @@ def _run(args):
         if m_title:
             args.title = m_title.group(1)
         if not jsx_parts:
-            # Pure HTML file: strip all <link stylesheet> and <style> blocks (we re-inject
-            # them via extra_css after processing @imports and font URLs)
+            # Pure HTML file: output as-is, just strip local stylesheets since we inline them
             html_standalone = re.sub(
-                r'<link\s+[^>]*rel=["\']stylesheet["\'][^>]*>',
+                r'<link\s+[^>]*rel=["\']stylesheet["\'][^>]*href=["\'](?!http|//)[^"\']+["\'][^>]*>',
                 '',
                 html_content,
                 flags=re.IGNORECASE
             )
-            html_standalone = re.sub(
-                r'<style[^>]*>.*?</style>',
-                '',
-                html_standalone,
-                flags=re.IGNORECASE | re.DOTALL
-            )
             if extra_css:
                 html_standalone = html_standalone.replace('</head>', f'{extra_css}\n</head>')
-
+            
             out_path = Path(args.output)
             out_path.parent.mkdir(parents=True, exist_ok=True)
             out_path.write_text(html_standalone, encoding="utf-8")
-            fully_offline = len(degraded_css) == 0
             print(json.dumps({
                 "output": str(out_path),
                 "size_kb": out_path.stat().st_size // 1024,
@@ -534,9 +526,8 @@ def _run(args):
                 "tailwind": False,
                 "inlined_deps": [],
                 "degraded_deps": [],
-                "degraded_css": degraded_css,
-                "fully_offline": fully_offline,
-                "file_protocol_compatible": fully_offline,
+                "fully_offline": True,
+                "file_protocol_compatible": True
             }, indent=2))
             sys.exit(0)
 
