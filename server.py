@@ -32,9 +32,15 @@ def _assert_prerequisites() -> None:
         raise RuntimeError("jsx2html: 'node' not found in PATH — Node.js is required")
 
 
-def _default_output_path(title: str) -> Path:
-    slug = re.sub(r"[^\w\-]", "_", title).strip("_") or "artifact"
-    return Path("~/Desktop").expanduser() / f"{slug}.html"
+def _slugify(s: str) -> str:
+    return re.sub(r"[^\w\-]", "_", s).strip("_") or "artifact"
+
+
+def _output_dir_and_stem(base_dir: Path, stem: str) -> tuple[Path, str]:
+    """Return (output_directory, stem) — creates <base_dir>/<stem>/."""
+    out_dir = base_dir / stem
+    out_dir.mkdir(parents=True, exist_ok=True)
+    return out_dir, stem
 
 
 def _find_entry(directory: Path) -> tuple[Path, bool]:
@@ -96,16 +102,25 @@ def _invoke_convert(input_path: Path, output_path: Path, title: str, mode: str, 
     }
 
 
-def _run_convert(jsx_code: str, output_path: Path, title: str, mode: str) -> dict:
+def _run_convert(jsx_code: str, title: str, mode: str, base_dir: Path | None) -> dict:
+    stem = _slugify(title)
+    base = base_dir or Path("~/Desktop").expanduser()
+    out_dir, stem = _output_dir_and_stem(base, stem)
+
     with tempfile.TemporaryDirectory(prefix="jsx2html_") as tmpdir:
         stripped = jsx_code.lstrip()
         ext = ".html" if stripped.lower().startswith(("<!doctype", "<html")) else ".jsx"
         input_file = Path(tmpdir) / f"input{ext}"
         input_file.write_text(jsx_code, encoding="utf-8")
-        return _invoke_convert(input_file, output_path, title, mode, batch=False)
+        return _invoke_convert(input_file, out_dir / f"{stem}.html", title, mode, batch=False)
 
 
-def _run_convert_tar(tar_gz_path: Path, output_path: Path, title: str, mode: str) -> dict:
+def _run_convert_tar(tar_gz_path: Path, title: str, mode: str, base_dir: Path | None) -> dict:
+    # stem from tar filename: cw-19999-2.tar.gz → cw-19999-2
+    stem = tar_gz_path.name.split(".")[0]
+    base = base_dir or tar_gz_path.parent
+    out_dir, stem = _output_dir_and_stem(base, stem)
+
     with tempfile.TemporaryDirectory(prefix="jsx2html_tar_") as tmpdir:
         extract_dir = Path(tmpdir) / "src"
         extract_dir.mkdir()
@@ -122,7 +137,13 @@ def _run_convert_tar(tar_gz_path: Path, output_path: Path, title: str, mode: str
             extract_dir = children[0]
 
         entry, is_batch = _find_entry(extract_dir)
-        return _invoke_convert(entry, output_path, title, mode, batch=is_batch)
+        result = _invoke_convert(entry, out_dir if is_batch else out_dir / f"{stem}.html", title, mode, batch=is_batch)
+
+        # batch_main writes a zip; surface its path as output_path
+        if is_batch and result.get("zip"):
+            result["output_path"] = result["zip"]
+
+        return result
 
 
 TOOL_CONVERT = Tool(
@@ -147,7 +168,7 @@ TOOL_CONVERT = Tool(
             },
             "output_path": {
                 "type": "string",
-                "description": "输出 HTML 文件路径（支持 ~），默认为 ~/Desktop/<title>.html",
+                "description": "输出基础目录（支持 ~）。工具会在此目录下自动建同名子文件夹。默认：jsx_code 用 ~/Desktop，tar_gz_path 用 tar 文件所在目录",
             },
             "title": {
                 "type": "string",
@@ -188,21 +209,17 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         raise ValueError("mode must be 'full' or 'fast'")
 
     raw_output = arguments.get("output_path")
-    output_path = (
-        Path(raw_output).expanduser().resolve()
-        if raw_output
-        else _default_output_path(title)
-    )
+    base_dir = Path(raw_output).expanduser().resolve() if raw_output else None
 
     loop = asyncio.get_running_loop()
     if tar_gz_path.strip():
         resolved_tar = Path(tar_gz_path).expanduser().resolve()
         result = await loop.run_in_executor(
-            None, _run_convert_tar, resolved_tar, output_path, title, mode
+            None, _run_convert_tar, resolved_tar, title, mode, base_dir
         )
     else:
         result = await loop.run_in_executor(
-            None, _run_convert, jsx_code, output_path, title, mode
+            None, _run_convert, jsx_code, title, mode, base_dir
         )
 
     return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
