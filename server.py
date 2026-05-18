@@ -105,19 +105,31 @@ def _invoke_convert(input_path: Path, output_path: Path, title: str, mode: str, 
 def _run_convert_url(url: str, title: str, mode: str, base_dir: Path | None) -> dict:
     import urllib.parse
     parsed = urllib.parse.urlparse(url)
-    stem = Path(parsed.path).stem or "index"
-    if not stem:
-        stem = "index"
-    out_dir = _dist_dir(base_dir or Path.cwd())
+    url_filename = Path(parsed.path).name or "download"
 
     with tempfile.TemporaryDirectory(prefix="jsx2html_url_") as tmpdir:
-        input_file = Path(tmpdir) / f"{stem}.html"
+        download_path = Path(tmpdir) / url_filename
         try:
-            with urllib.request.urlopen(url, timeout=30) as resp:
-                input_file.write_bytes(resp.read())
+            with urllib.request.urlopen(url, timeout=60) as resp:
+                content_type = resp.headers.get("Content-Type", "")
+                data = resp.read()
         except Exception as e:
             raise RuntimeError(f"jsx2html: failed to fetch {url}: {e}")
-        return _invoke_convert(input_file, out_dir / f"{stem}.html", title, mode, batch=False)
+
+        download_path.write_bytes(data)
+
+        is_tar = (
+            "tar" in content_type
+            or url_filename.endswith((".tar.gz", ".tgz", ".tar"))
+            or tarfile.is_tarfile(download_path)
+        )
+
+        if is_tar:
+            return _run_convert_tar(download_path, title, mode, base_dir or Path.cwd())
+        else:
+            stem = Path(url_filename).stem or "index"
+            out_dir = _dist_dir(base_dir or Path.cwd())
+            return _invoke_convert(download_path, out_dir / f"{stem}.html", title, mode, batch=False)
 
 
 def _run_convert_file(file_path: Path, title: str, mode: str, base_dir: Path | None) -> dict:
@@ -186,7 +198,7 @@ TOOL_CONVERT = Tool(
             },
             "url": {
                 "type": "string",
-                "description": "远程 HTML 页面的 URL（http/https）。抓取后转换，输出到当前工作目录的 dist/ 下",
+                "description": "远程文件的 URL（http/https）。tar.gz 压缩包自动走多文件转换流程；HTML 文件直接转换。输出到当前工作目录的 dist/ 下",
             },
             "tar_gz_path": {
                 "type": "string",
