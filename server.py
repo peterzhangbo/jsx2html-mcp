@@ -36,11 +36,11 @@ def _slugify(s: str) -> str:
     return re.sub(r"[^\w\-]", "_", s).strip("_") or "artifact"
 
 
-def _output_dir_and_stem(base_dir: Path, stem: str) -> tuple[Path, str]:
-    """Return (output_directory, stem) — creates <base_dir>/<stem>/."""
-    out_dir = base_dir / stem
-    out_dir.mkdir(parents=True, exist_ok=True)
-    return out_dir, stem
+def _dist_dir(base: Path) -> Path:
+    """Return <base>/dist/, creating it if needed."""
+    d = base / "dist"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
 
 def _find_entry(directory: Path) -> tuple[Path, bool]:
@@ -104,8 +104,7 @@ def _invoke_convert(input_path: Path, output_path: Path, title: str, mode: str, 
 
 def _run_convert(jsx_code: str, title: str, mode: str, base_dir: Path | None) -> dict:
     stem = _slugify(title)
-    base = base_dir or Path("~/Desktop").expanduser()
-    out_dir, stem = _output_dir_and_stem(base, stem)
+    out_dir = _dist_dir(base_dir or Path("~/Desktop").expanduser())
 
     with tempfile.TemporaryDirectory(prefix="jsx2html_") as tmpdir:
         stripped = jsx_code.lstrip()
@@ -116,10 +115,8 @@ def _run_convert(jsx_code: str, title: str, mode: str, base_dir: Path | None) ->
 
 
 def _run_convert_tar(tar_gz_path: Path, title: str, mode: str, base_dir: Path | None) -> dict:
-    # stem from tar filename: cw-19999-2.tar.gz → cw-19999-2
     stem = tar_gz_path.name.split(".")[0]
-    base = base_dir or tar_gz_path.parent
-    out_dir, stem = _output_dir_and_stem(base, stem)
+    out_dir = _dist_dir(base_dir or tar_gz_path.parent)
 
     with tempfile.TemporaryDirectory(prefix="jsx2html_tar_") as tmpdir:
         extract_dir = Path(tmpdir) / "src"
@@ -137,7 +134,8 @@ def _run_convert_tar(tar_gz_path: Path, title: str, mode: str, base_dir: Path | 
             extract_dir = children[0]
 
         entry, is_batch = _find_entry(extract_dir)
-        result = _invoke_convert(entry, out_dir if is_batch else out_dir / f"{stem}.html", title, mode, batch=is_batch)
+        out_path = out_dir if is_batch else out_dir / f"{stem}.html"
+        result = _invoke_convert(entry, out_path, title, mode, batch=is_batch)
 
         # batch_main writes a zip; surface its path as output_path
         if is_batch and result.get("zip"):
@@ -168,7 +166,7 @@ TOOL_CONVERT = Tool(
             },
             "output_path": {
                 "type": "string",
-                "description": "输出基础目录（支持 ~）。工具会在此目录下自动建同名子文件夹。默认：jsx_code 用 ~/Desktop，tar_gz_path 用 tar 文件所在目录",
+                "description": "输出基础目录（支持 ~）。工具在此目录下建 dist/ 子文件夹存放产物。默认：jsx_code 用 ~/Desktop，tar_gz_path 用 tar 文件所在目录",
             },
             "title": {
                 "type": "string",
