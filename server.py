@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import urllib.parse
 import zipfile
 from pathlib import Path
 
@@ -103,6 +104,19 @@ def _invoke_convert(input_path: Path, output_path: Path, title: str, mode: str, 
     }
 
 
+def _fix_zip_name(result: dict, out_dir: Path, stem: str) -> None:
+    """Rename batch zip to <stem>-design.zip and update result in-place."""
+    raw = result.get("zip")
+    if not raw:
+        return
+    actual = Path(raw)
+    named = out_dir / f"{stem}-design.zip"
+    if actual.exists() and actual != named:
+        actual.rename(named)
+    result["output_path"] = str(named)
+    result["zip"] = str(named)
+
+
 def _run_convert_zip(zip_path: Path, title: str, mode: str, base_dir: Path | None) -> dict:
     stem = zip_path.name.split(".")[0]
     out_dir = _dist_dir(base_dir or zip_path.parent)
@@ -121,15 +135,11 @@ def _run_convert_zip(zip_path: Path, title: str, mode: str, base_dir: Path | Non
         entry, is_batch = _find_entry(extract_dir)
         out_path = out_dir if is_batch else out_dir / f"{stem}.html"
         result = _invoke_convert(entry, out_path, title, mode, batch=is_batch)
-
-        if is_batch and result.get("zip"):
-            result["output_path"] = result["zip"]
-
+        _fix_zip_name(result, out_dir, stem)
         return result
 
 
 def _run_convert_url(url: str, title: str, mode: str, base_dir: Path | None) -> dict:
-    import urllib.parse
     parsed = urllib.parse.urlparse(url)
     url_filename = Path(parsed.path).name or "download"
 
@@ -210,11 +220,7 @@ def _run_convert_tar(tar_gz_path: Path, title: str, mode: str, base_dir: Path | 
         entry, is_batch = _find_entry(extract_dir)
         out_path = out_dir if is_batch else out_dir / f"{stem}.html"
         result = _invoke_convert(entry, out_path, title, mode, batch=is_batch)
-
-        # batch_main writes a zip; surface its path as output_path
-        if is_batch and result.get("zip"):
-            result["output_path"] = result["zip"]
-
+        _fix_zip_name(result, out_dir, stem)
         return result
 
 
@@ -248,7 +254,7 @@ TOOL_CONVERT = Tool(
             },
             "output_path": {
                 "type": "string",
-                "description": "输出基础目录（支持 ~）。工具在此目录下建 dist/ 子文件夹存放产物。默认：tar_gz_path 用 tar 文件所在目录，jsx_code 用当前工作目录",
+                "description": "输出基础目录（支持 ~）。工具在此目录下建 dist/ 子文件夹存放产物。默认：file_path/tar_gz_path 用输入文件所在目录，url/jsx_code 用当前工作目录",
             },
             "title": {
                 "type": "string",
