@@ -1,0 +1,22 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "jsx2html-mcp"
+version = "2.0.0"
+description = "MCP server that converts React/JSX artifacts into self-contained offline HTML files"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["mcp[cli]>=1.0.0,<2.0.0"]
+
+[project.scripts]
+jsx2html-mcp = "server:main_sync"
+
+[tool.hatch.build.targets.wheel]
+include = [
+    "server.py",
+    "scripts/convert.py",
+    "assets/template.html",
+    "assets/vendor/**",
+]
