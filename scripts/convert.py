@@ -162,6 +162,36 @@ def _clean_names(s: str) -> list:
     return out
 
 
+# Matches: @import url("..."), @import url('...'), @import "...", @import '...'
+_CSS_IMPORT_RE = re.compile(
+    r"""@import\s+(?:url\(\s*['"]?|['"])([^'")\s]+)['"]?\s*\)?[^;]*;""",
+    re.IGNORECASE,
+)
+
+
+def _inline_css_imports(css: str, mode: str, degraded_css: list) -> str:
+    """Replace external @import rules with fetched CSS (full mode) or leave + record (fast mode)."""
+    def replace(m):
+        url = m.group(1)
+        if not url.startswith(("http://", "https://")):
+            return m.group(0)  # local or data: — leave as-is
+        if mode == "full":
+            try:
+                with urllib.request.urlopen(url, timeout=15) as resp:
+                    fetched = resp.read().decode("utf-8", errors="replace")
+                # Recursively inline any nested @imports in the fetched CSS
+                fetched = _inline_css_imports(fetched, mode, degraded_css)
+                return f"/* inlined from {url} */\n{fetched}"
+            except Exception:
+                degraded_css.append(url)
+                return m.group(0)
+        else:
+            degraded_css.append(url)
+            return m.group(0)
+
+    return _CSS_IMPORT_RE.sub(replace, css)
+
+
 def transform_react_imports(jsx: str):
     """
     Replace React/ReactDOM ES import statements with window global destructuring.
@@ -369,26 +399,29 @@ def _run(args):
 
     input_path = Path(args.input)
     extra_css = ""
-    
+    degraded_css = []
+
     if input_path.suffix.lower() == '.html':
         html_content = input_path.read_text(encoding="utf-8")
-        
+
         # 1. Extract remote links (preconnect, fonts)
         for m in re.finditer(r'<link\s+[^>]*rel=["\'](?:stylesheet|preconnect)["\'][^>]*>', html_content, re.IGNORECASE):
             if re.search(r'href=["\'](http[^"\']+|//[^"\']+)["\']', m.group(0), re.IGNORECASE):
                 extra_css = m.group(0) + "\n" + extra_css
-                
+
         # 2. Extract local CSS files
         for m in re.finditer(r'<link\s+[^>]*rel=["\']stylesheet["\'][^>]*href=["\']([^"\']+)["\'][^>]*>', html_content, re.IGNORECASE):
             href = m.group(1)
             if not href.startswith(('http://', 'https://', '//')):
                 css_file = input_path.parent / href
                 if css_file.exists():
-                    extra_css += f"\n<!-- Inlined from {href} -->\n<style>\n{css_file.read_text(encoding='utf-8')}\n</style>\n"
-                    
+                    css_content = _inline_css_imports(css_file.read_text(encoding='utf-8'), args.mode, degraded_css)
+                    extra_css += f"\n<!-- Inlined from {href} -->\n<style>\n{css_content}\n</style>\n"
+
         # 3. Extract embedded <style> blocks
         for m in re.finditer(r'<style[^>]*>(.*?)</style>', html_content, re.IGNORECASE | re.DOTALL):
-            extra_css += f"\n<style>\n{m.group(1)}\n</style>\n"
+            css_content = _inline_css_imports(m.group(1), args.mode, degraded_css)
+            extra_css += f"\n<style>\n{css_content}\n</style>\n"
             
         # 4. Extract local jsx scripts
         jsx_parts = []
@@ -561,7 +594,7 @@ def _run(args):
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text(html, encoding="utf-8")
     size_kb = out_path.stat().st_size // 1024
-    fully_offline = len(degraded) == 0
+    fully_offline = len(degraded) == 0 and len(degraded_css) == 0
 
     result = {
         "output": str(out_path),
@@ -570,6 +603,7 @@ def _run(args):
         "tailwind": use_tailwind,
         "inlined_deps": inlined,
         "degraded_deps": degraded,
+        "degraded_css": degraded_css,
         "fully_offline": fully_offline,
         "file_protocol_compatible": fully_offline,
     }
