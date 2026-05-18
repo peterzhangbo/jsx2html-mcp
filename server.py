@@ -250,7 +250,7 @@ TOOL_CONVERT = Tool(
             },
             "jsx_code": {
                 "type": "string",
-                "description": "JSX/React 源代码或 HTML 文档字符串。仅用于文件尚未落盘的场景（如模型刚生成的代码）。文件已在磁盘上时必须用 file_path，禁止读取文件内容后通过此参数传入。",
+                "description": "JSX/React 源代码或 HTML 文档字符串。仅用于文件尚未落盘的场景（如模型刚生成的代码）。文件已在磁盘上时必须用 file_path，禁止读取文件内容后通过此参数传入。严禁截断、压缩或用占位内容替换源码——必须传入完整原始内容，否则转换产物将损坏。若完整内容过长无法通过此参数传入，必须先将内容写入文件再用 file_path。",
             },
             "output_path": {
                 "type": "string",
