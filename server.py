@@ -102,6 +102,24 @@ def _invoke_convert(input_path: Path, output_path: Path, title: str, mode: str, 
     }
 
 
+def _run_convert_url(url: str, title: str, mode: str, base_dir: Path | None) -> dict:
+    import urllib.parse
+    parsed = urllib.parse.urlparse(url)
+    stem = Path(parsed.path).stem or "index"
+    if not stem:
+        stem = "index"
+    out_dir = _dist_dir(base_dir or Path.cwd())
+
+    with tempfile.TemporaryDirectory(prefix="jsx2html_url_") as tmpdir:
+        input_file = Path(tmpdir) / f"{stem}.html"
+        try:
+            with urllib.request.urlopen(url, timeout=30) as resp:
+                input_file.write_bytes(resp.read())
+        except Exception as e:
+            raise RuntimeError(f"jsx2html: failed to fetch {url}: {e}")
+        return _invoke_convert(input_file, out_dir / f"{stem}.html", title, mode, batch=False)
+
+
 def _run_convert_file(file_path: Path, title: str, mode: str, base_dir: Path | None) -> dict:
     stem = file_path.stem
     out_dir = _dist_dir(base_dir or file_path.parent)
@@ -153,11 +171,11 @@ def _run_convert_tar(tar_gz_path: Path, title: str, mode: str, base_dir: Path | 
 TOOL_CONVERT = Tool(
     name="jsx2html_convert",
     description=(
-        "将 React/JSX 源码、单个 HTML/JSX 文件或 tar.gz handoff 包转换为完全自包含的离线产物，写入磁盘后返回输出路径和元数据。"
+        "将 React/JSX 源码、本地文件、远程 URL 或 tar.gz handoff 包转换为完全自包含的离线产物，写入磁盘后返回输出路径和元数据。"
         "单文件输出 .html；tar.gz 含多个 HTML 时批量转换并打包为 .zip。"
         "支持 React、Tailwind、lucide-react、recharts、framer-motion 等 38 个常用包的完整内联。"
         "所有外部字体（@import、<link> stylesheet）在 full 模式下均抓取内联，输出兼容 file:// 协议。"
-        "输入三选一：file_path > tar_gz_path > jsx_code，优先级依次降低。"
+        "输入四选一优先级：file_path > url > tar_gz_path > jsx_code。"
     ),
     inputSchema={
         "type": "object",
@@ -165,6 +183,10 @@ TOOL_CONVERT = Tool(
             "file_path": {
                 "type": "string",
                 "description": "单个 HTML 或 JSX 文件的本地路径（支持 ~）。输出到文件所在目录的 dist/ 下",
+            },
+            "url": {
+                "type": "string",
+                "description": "远程 HTML 页面的 URL（http/https）。抓取后转换，输出到当前工作目录的 dist/ 下",
             },
             "tar_gz_path": {
                 "type": "string",
@@ -209,8 +231,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     jsx_code = arguments.get("jsx_code", "")
     tar_gz_path = arguments.get("tar_gz_path", "")
     file_path = arguments.get("file_path", "")
-    if not jsx_code.strip() and not tar_gz_path.strip() and not file_path.strip():
-        raise ValueError("file_path、tar_gz_path、jsx_code 必须提供其中一个")
+    url = arguments.get("url", "")
+    if not any([jsx_code.strip(), tar_gz_path.strip(), file_path.strip(), url.strip()]):
+        raise ValueError("file_path、url、tar_gz_path、jsx_code 必须提供其中一个")
 
     title = arguments.get("title", "React Artifact")
     mode = arguments.get("mode", "full")
@@ -225,6 +248,10 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         resolved_file = Path(file_path).expanduser().resolve()
         result = await loop.run_in_executor(
             None, _run_convert_file, resolved_file, title, mode, base_dir
+        )
+    elif url.strip():
+        result = await loop.run_in_executor(
+            None, _run_convert_url, url.strip(), title, mode, base_dir
         )
     elif tar_gz_path.strip():
         resolved_tar = Path(tar_gz_path).expanduser().resolve()
