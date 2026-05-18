@@ -102,6 +102,12 @@ def _invoke_convert(input_path: Path, output_path: Path, title: str, mode: str, 
     }
 
 
+def _run_convert_file(file_path: Path, title: str, mode: str, base_dir: Path | None) -> dict:
+    stem = file_path.stem
+    out_dir = _dist_dir(base_dir or file_path.parent)
+    return _invoke_convert(file_path, out_dir / f"{stem}.html", title, mode, batch=False)
+
+
 def _run_convert(jsx_code: str, title: str, mode: str, base_dir: Path | None) -> dict:
     stem = _slugify(title)
     out_dir = _dist_dir(base_dir or Path.cwd())
@@ -147,22 +153,26 @@ def _run_convert_tar(tar_gz_path: Path, title: str, mode: str, base_dir: Path | 
 TOOL_CONVERT = Tool(
     name="jsx2html_convert",
     description=(
-        "将 React/JSX 源码或 tar.gz handoff 包转换为完全自包含的离线产物，写入磁盘后返回输出路径和元数据。"
-        "单文件输入输出 .html；tar.gz 包含多个 HTML 时自动批量转换并打包为 .zip。"
+        "将 React/JSX 源码、单个 HTML/JSX 文件或 tar.gz handoff 包转换为完全自包含的离线产物，写入磁盘后返回输出路径和元数据。"
+        "单文件输出 .html；tar.gz 含多个 HTML 时批量转换并打包为 .zip。"
         "支持 React、Tailwind、lucide-react、recharts、framer-motion 等 38 个常用包的完整内联。"
         "所有外部字体（@import、<link> stylesheet）在 full 模式下均抓取内联，输出兼容 file:// 协议。"
-        "jsx_code 与 tar_gz_path 二选一，tar_gz_path 优先。"
+        "输入三选一：file_path > tar_gz_path > jsx_code，优先级依次降低。"
     ),
     inputSchema={
         "type": "object",
         "properties": {
-            "jsx_code": {
+            "file_path": {
                 "type": "string",
-                "description": "JSX/React 源代码，或完整的 HTML 文档字符串（自动按内容类型处理，不支持相对 import）",
+                "description": "单个 HTML 或 JSX 文件的本地路径（支持 ~）。输出到文件所在目录的 dist/ 下",
             },
             "tar_gz_path": {
                 "type": "string",
                 "description": "tar.gz handoff 包的本地路径（支持 ~）。包内可含多个文件，自动探测入口并转换",
+            },
+            "jsx_code": {
+                "type": "string",
+                "description": "JSX/React 源代码，或完整的 HTML 文档字符串（自动按内容类型处理，不支持相对 import）",
             },
             "output_path": {
                 "type": "string",
@@ -198,8 +208,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 
     jsx_code = arguments.get("jsx_code", "")
     tar_gz_path = arguments.get("tar_gz_path", "")
-    if not jsx_code.strip() and not tar_gz_path.strip():
-        raise ValueError("jsx_code 或 tar_gz_path 必须提供其中一个")
+    file_path = arguments.get("file_path", "")
+    if not jsx_code.strip() and not tar_gz_path.strip() and not file_path.strip():
+        raise ValueError("file_path、tar_gz_path、jsx_code 必须提供其中一个")
 
     title = arguments.get("title", "React Artifact")
     mode = arguments.get("mode", "full")
@@ -210,7 +221,12 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     base_dir = Path(raw_output).expanduser().resolve() if raw_output else None
 
     loop = asyncio.get_running_loop()
-    if tar_gz_path.strip():
+    if file_path.strip():
+        resolved_file = Path(file_path).expanduser().resolve()
+        result = await loop.run_in_executor(
+            None, _run_convert_file, resolved_file, title, mode, base_dir
+        )
+    elif tar_gz_path.strip():
         resolved_tar = Path(tar_gz_path).expanduser().resolve()
         result = await loop.run_in_executor(
             None, _run_convert_tar, resolved_tar, title, mode, base_dir
