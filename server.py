@@ -7,6 +7,7 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 from pathlib import Path
 
@@ -36,61 +37,110 @@ def _default_output_path(title: str) -> Path:
     return Path("~/Desktop").expanduser() / f"{slug}.html"
 
 
+def _find_entry(directory: Path) -> tuple[Path, bool]:
+    """Return (entry_path, is_batch). Raises RuntimeError if nothing usable found."""
+    html_files = sorted(directory.rglob("*.html"))
+    if len(html_files) > 1:
+        return directory, True
+    if len(html_files) == 1:
+        return html_files[0], False
+    # Fall back to JSX/JS entry points
+    for name in ("App.jsx", "index.jsx", "main.jsx", "App.js", "index.js", "main.js"):
+        for f in directory.rglob(name):
+            return f, False
+    jsx_files = sorted(directory.rglob("*.jsx")) + sorted(directory.rglob("*.js"))
+    if jsx_files:
+        return jsx_files[0], False
+    raise RuntimeError("jsx2html: no HTML or JSX entry point found in the package")
+
+
+def _invoke_convert(input_path: Path, output_path: Path, title: str, mode: str, batch: bool) -> dict:
+    """Run convert.py and return the result dict."""
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    cmd = [
+        sys.executable, str(CONVERT_SCRIPT),
+        str(input_path),
+        "-o", str(output_path),
+        "--mode", mode,
+        "--title", title,
+    ]
+    if batch:
+        cmd.append("--batch")
+
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError("jsx2html: conversion timed out after 120 seconds")
+
+    if proc.returncode != 0:
+        detail = (proc.stderr + "\n" + proc.stdout).strip()
+        raise RuntimeError(f"jsx2html conversion failed:\n{detail}")
+
+    metadata = {}
+    try:
+        metadata = json.loads(proc.stdout)
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    size_kb = metadata.get("size_kb")
+    if size_kb is None and output_path.exists():
+        size_kb = output_path.stat().st_size // 1024
+
+    return {
+        "output_path": str(output_path),
+        "size_kb": size_kb or 0,
+        "fully_offline": metadata.get("fully_offline", True),
+        "tailwind": metadata.get("tailwind", False),
+        "inlined_deps": metadata.get("inlined_deps", []),
+        "degraded_deps": metadata.get("degraded_deps", []),
+    }
+
+
 def _run_convert(jsx_code: str, output_path: Path, title: str, mode: str) -> dict:
     with tempfile.TemporaryDirectory(prefix="jsx2html_") as tmpdir:
         input_file = Path(tmpdir) / "input.jsx"
         input_file.write_text(jsx_code, encoding="utf-8")
+        return _invoke_convert(input_file, output_path, title, mode, batch=False)
 
-        output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        cmd = [
-            sys.executable,
-            str(CONVERT_SCRIPT),
-            str(input_file),
-            "-o", str(output_path),
-            "--mode", mode,
-            "--title", title,
-        ]
+def _run_convert_tar(tar_gz_path: Path, output_path: Path, title: str, mode: str) -> dict:
+    with tempfile.TemporaryDirectory(prefix="jsx2html_tar_") as tmpdir:
+        extract_dir = Path(tmpdir) / "src"
+        extract_dir.mkdir()
 
-        try:
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-        except subprocess.TimeoutExpired:
-            raise RuntimeError("jsx2html: conversion timed out after 120 seconds")
+        if not tarfile.is_tarfile(tar_gz_path):
+            raise RuntimeError(f"jsx2html: not a valid tar file: {tar_gz_path}")
 
-        if proc.returncode != 0:
-            detail = (proc.stderr + "\n" + proc.stdout).strip()
-            raise RuntimeError(f"jsx2html conversion failed:\n{detail}")
+        with tarfile.open(tar_gz_path, "r:*") as tf:
+            tf.extractall(extract_dir)
 
-        metadata = {}
-        try:
-            metadata = json.loads(proc.stdout)
-        except (json.JSONDecodeError, ValueError):
-            pass
+        # Unwrap single top-level directory (common in handoff packages)
+        children = list(extract_dir.iterdir())
+        if len(children) == 1 and children[0].is_dir():
+            extract_dir = children[0]
 
-        return {
-            "output_path": str(output_path),
-            "size_kb": metadata.get("size_kb", output_path.stat().st_size // 1024),
-            "fully_offline": metadata.get("fully_offline", True),
-            "tailwind": metadata.get("tailwind", False),
-            "inlined_deps": metadata.get("inlined_deps", []),
-            "degraded_deps": metadata.get("degraded_deps", []),
-        }
+        entry, is_batch = _find_entry(extract_dir)
+        return _invoke_convert(entry, output_path, title, mode, batch=is_batch)
 
 
 TOOL_CONVERT = Tool(
     name="jsx2html_convert",
     description=(
-        "将 React/JSX 源码转换为完全自包含的离线 HTML 文件，写入磁盘后返回输出路径和元数据。"
+        "将 React/JSX 源码或 tar.gz handoff 包转换为完全自包含的离线 HTML 文件，写入磁盘后返回输出路径和元数据。"
         "支持 React、Tailwind、lucide-react、recharts、framer-motion 等 38 个常用包的完整内联。"
         "输出文件兼容 file:// 协议，无需网络即可打开。"
+        "jsx_code 与 tar_gz_path 二选一，tar_gz_path 优先。"
     ),
     inputSchema={
         "type": "object",
-        "required": ["jsx_code"],
         "properties": {
             "jsx_code": {
                 "type": "string",
-                "description": "完整的 JSX/React 源代码（不支持相对 import，请先合并为单文件）",
+                "description": "完整的单文件 JSX/React 源代码（不支持相对 import）",
+            },
+            "tar_gz_path": {
+                "type": "string",
+                "description": "tar.gz handoff 包的本地路径（支持 ~）。包内可含多个文件，自动探测入口并转换",
             },
             "output_path": {
                 "type": "string",
@@ -125,8 +175,9 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         raise ValueError(f"Unknown tool: {name}")
 
     jsx_code = arguments.get("jsx_code", "")
-    if not jsx_code.strip():
-        raise ValueError("jsx_code must not be empty")
+    tar_gz_path = arguments.get("tar_gz_path", "")
+    if not jsx_code.strip() and not tar_gz_path.strip():
+        raise ValueError("jsx_code 或 tar_gz_path 必须提供其中一个")
 
     title = arguments.get("title", "React Artifact")
     mode = arguments.get("mode", "full")
@@ -141,9 +192,15 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     )
 
     loop = asyncio.get_running_loop()
-    result = await loop.run_in_executor(
-        None, _run_convert, jsx_code, output_path, title, mode
-    )
+    if tar_gz_path.strip():
+        resolved_tar = Path(tar_gz_path).expanduser().resolve()
+        result = await loop.run_in_executor(
+            None, _run_convert_tar, resolved_tar, output_path, title, mode
+        )
+    else:
+        result = await loop.run_in_executor(
+            None, _run_convert, jsx_code, output_path, title, mode
+        )
 
     return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False))]
 
