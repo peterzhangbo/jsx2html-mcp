@@ -126,9 +126,10 @@ def _run_convert_tar(tar_gz_path: Path, output_path: Path, title: str, mode: str
 TOOL_CONVERT = Tool(
     name="jsx2html_convert",
     description=(
-        "将 React/JSX 源码或 tar.gz handoff 包转换为完全自包含的离线 HTML 文件，写入磁盘后返回输出路径和元数据。"
+        "将 React/JSX 源码或 tar.gz handoff 包转换为完全自包含的离线产物，写入磁盘后返回输出路径和元数据。"
+        "单文件输入输出 .html；tar.gz 包含多个 HTML 时自动批量转换并打包为 .zip。"
         "支持 React、Tailwind、lucide-react、recharts、framer-motion 等 38 个常用包的完整内联。"
-        "输出文件兼容 file:// 协议，无需网络即可打开。"
+        "所有外部字体（@import、<link> stylesheet）在 full 模式下均抓取内联，输出兼容 file:// 协议。"
         "jsx_code 与 tar_gz_path 二选一，tar_gz_path 优先。"
     ),
     inputSchema={
